@@ -46,10 +46,13 @@ def ffmpeg_ok():
         return False
 
 
-def run(cmd, cwd=None):
+def run(cmd, cwd=None, timeout=3600):
     flags = 0x08000000 if platform.system() == "Windows" else 0  # 윈도우에서 검은 창 안 뜨게
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", creationflags=flags)
+    try:
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=flags, stdin=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ComposeError(f"ffmpeg 가 {timeout // 60}분 안에 끝나지 않았습니다.")
     if p.returncode != 0:
         tail = (p.stderr or "")[-1200:]
         raise ComposeError(f"ffmpeg 실행 실패:\n{tail}")

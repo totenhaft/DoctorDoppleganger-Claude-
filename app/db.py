@@ -45,13 +45,42 @@ CREATE TABLE IF NOT EXISTS scripts (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS avatars (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL,                -- video / photo
+    src_path    TEXT NOT NULL,                -- 올린 원본
+    norm_path   TEXT,                         -- 25fps·최대 20초·1080 이하로 맞춘 파일
+    preview_path TEXT,
+    orientation TEXT,                         -- landscape / portrait
+    width       INTEGER,
+    height      INTEGER,
+    prep_dir    TEXT,                         -- 입모양 준비 자료 폴더
+    status      TEXT NOT NULL,                -- pending / preparing / ready / unprepared / failed
+    progress    REAL,
+    message     TEXT,
+    error       TEXT,
+    created_by  TEXT,
+    created_at  REAL NOT NULL,
+    prepared_at REAL
+);
+CREATE TABLE IF NOT EXISTS voices (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    language   TEXT NOT NULL,
+    ref_path   TEXT NOT NULL,                 -- 24kHz 모노 wav
+    ref_text   TEXT NOT NULL,                 -- 녹음할 때 읽은 문장 (정확할수록 좋음)
+    seconds    REAL,
+    created_by TEXT,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS videos (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     title           TEXT NOT NULL,
     script_id       INTEGER,
     script_snapshot TEXT NOT NULL,            -- 만들 때의 원고 JSON (원고가 바뀌어도 영상은 그대로)
     language        TEXT NOT NULL,
-    avatar_id       TEXT NOT NULL,
+    avatar_id       TEXT NOT NULL,            -- 아바타 번호 또는 demo-landscape 같은 연습용 이름
     avatar_name     TEXT,
     avatar_preview  TEXT,
     voice_id        TEXT,
@@ -59,10 +88,16 @@ CREATE TABLE IF NOT EXISTS videos (
     background      TEXT,                     -- JSON 또는 NULL
     style           TEXT NOT NULL,            -- 자막 표시 설정 JSON
     demo            INTEGER NOT NULL DEFAULT 0,
-    status          TEXT NOT NULL,            -- queued / avatar / timing / compose / done / failed / cancelled
+    voice_mode      TEXT NOT NULL DEFAULT 'silent',  -- clone(목소리 흉내) / recording(직접 녹음) / silent(소리 없음, 연습)
+    voice_db_id     INTEGER,
+    recordings      TEXT,                     -- 직접 녹음: 단계별 파일 경로 JSON
+    lipsync         INTEGER NOT NULL DEFAULT 1,
+    audio_path      TEXT,
+    progress        REAL,
+    status          TEXT NOT NULL,            -- queued / voice / lipsync / compose / done / failed / cancelled
     message         TEXT,
     error           TEXT,
-    heygen_video_id TEXT,
+    heygen_video_id TEXT,                     -- (이전 버전에서 쓰던 칸, 지금은 안 씀)
     raw_path        TEXT,
     final_path      TEXT,
     thumb_path      TEXT,
@@ -101,9 +136,20 @@ def db():
             conn.close()
 
 
+NEW_VIDEO_COLUMNS = {
+    "voice_mode": "TEXT NOT NULL DEFAULT 'silent'", "voice_db_id": "INTEGER", "recordings": "TEXT",
+    "lipsync": "INTEGER NOT NULL DEFAULT 1", "audio_path": "TEXT", "progress": "REAL",
+}
+
+
 def init_db():
     with db() as c:
         c.executescript(SCHEMA)
+        # 이전 버전 데이터베이스에 새 칸 추가
+        have = {r["name"] for r in c.execute("PRAGMA table_info(videos)").fetchall()}
+        for col, decl in NEW_VIDEO_COLUMNS.items():
+            if col not in have:
+                c.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
 
 
 def row(r):
@@ -172,15 +218,15 @@ DEFAULT_SETTINGS = {
     "languages": DEFAULT_LANGUAGES,
     "caption_style": DEFAULT_STYLE,
     "share_page": DEFAULT_SHARE,
-    "resolution": "1080p",
+    "tts_precision": "float32",   # float32(정확) / float16(빠름·메모리 적게)
+    "lipsync_batch": 8,           # 입모양을 한 번에 몇 장씩 그릴지 (메모리 부족하면 줄이기)
     "logo_file": "",
-    "heygen_api_key": "",
     "anthropic_api_key": "",
     "claude_model": "",
     "public_base_url": "",   # 환자에게 보낼 공유 링크의 앞부분 (예: https://video.우리병원.com)
 }
 
-SECRET_KEYS = {"heygen_api_key", "anthropic_api_key"}
+SECRET_KEYS = {"anthropic_api_key"}
 
 
 def get_setting(key):

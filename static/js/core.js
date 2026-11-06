@@ -58,6 +58,8 @@ const ICONS = {
   menu: '<path d="M3 6h18M3 12h18M3 18h18"/>',
   x: '<path d="M18 6L6 18M6 6l12 12"/>',
   film: '<rect x="2" y="2" width="20" height="20" rx="2.18"/><path d="M7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 17h5M17 7h5"/>',
+  face: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/>',
   refresh: '<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.5 15"/>',
 };
 function icon(name) {
@@ -194,6 +196,7 @@ const NAV = [
   { id: 'script', label: '스크립트 등록', icon: 'pen' },
   { id: 'create', label: '영상 만들기', icon: 'play' },
   { id: 'history', label: '생성 이력', icon: 'list' },
+  { id: 'studio', label: '아바타·목소리', icon: 'face' },
   { id: 'share', label: '안내문구 설정', icon: 'link', op: true },
   { id: 'settings', label: '설정', icon: 'gear' },
 ];

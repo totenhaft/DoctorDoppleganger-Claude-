@@ -1,21 +1,17 @@
-"""연습 모드: HeyGen 비용 없이 '아바타 자리'만 있는 소리 없는 영상을 만듭니다.
-
-자막·배지·로고 합성이 어떻게 보이는지 미리 확인하는 용도입니다.
+"""연습용 아바타: 원장님 영상을 등록하기 전에도 '아바타 자리'만 있는 그림으로
+자막·배지·로고 합성이 어떻게 보이는지 시험할 수 있게 합니다.
 """
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .compose import _tool, get_font, run
-from .textutil import estimate_seconds
+from .compose import get_font
 
 DEMO_AVATARS = [
-    {"id": "demo-landscape", "name": "연습용 아바타 (가로)", "type": "demo", "orientation": "landscape",
-     "preview_image": "/static/demo-landscape.png", "preview_video": None, "default_voice_id": None,
-     "mine": True, "demo": True},
-    {"id": "demo-portrait", "name": "연습용 아바타 (세로)", "type": "demo", "orientation": "portrait",
-     "preview_image": "/static/demo-portrait.png", "preview_video": None, "default_voice_id": None,
-     "mine": True, "demo": True},
+    {"id": "demo-landscape", "name": "연습용 아바타 (가로)", "kind": "photo", "orientation": "landscape",
+     "preview_image": "/static/demo-landscape.png", "status": "demo", "demo": True},
+    {"id": "demo-portrait", "name": "연습용 아바타 (세로)", "kind": "photo", "orientation": "portrait",
+     "preview_image": "/static/demo-portrait.png", "status": "demo", "demo": True},
 ]
 
 
@@ -51,18 +47,14 @@ def demo_frame(W, H):
     return img
 
 
-def make_demo_video(steps, language, aspect, out_path, workdir):
-    W, H = (1920, 1080) if aspect == "16:9" else (1080, 1920)
-    dur = max(4.0, estimate_seconds(steps, language))
-    Path(workdir).mkdir(parents=True, exist_ok=True)
-    bg = Path(workdir) / "demo_bg.png"
-    demo_frame(W, H).save(bg)
-    run([_tool("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error",
-         "-loop", "1", "-framerate", "25", "-i", str(bg),
-         "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-         "-t", f"{dur:.2f}", "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
-         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-shortest", str(out_path)])
-    return dur
+def demo_source(avatar_id, workdir):
+    """연습용 아바타의 화면 그림 (사진 아바타처럼 반복해서 씀)"""
+    W, H = (1920, 1080) if avatar_id == "demo-landscape" else (1080, 1920)
+    p = Path(workdir) / f"{avatar_id}.png"
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        demo_frame(W, H).save(p)
+    return str(p)
 
 
 def make_demo_previews(static_dir):

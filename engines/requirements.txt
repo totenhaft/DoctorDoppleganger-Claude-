@@ -1,0 +1,12 @@
+# 영상 엔진(목소리·입모양) 전용 패키지 — engines/install.py 가 engines/.venv 에 설치합니다.
+# torch / torchvision / torchaudio 는 그래픽카드(CUDA)용을 따로 먼저 설치합니다.
+qwen-tts==0.1.1
+diffusers==0.34.0
+huggingface_hub[hf_xet]>=0.34,<1.0
+librosa>=0.10
+soundfile>=0.12
+opencv-python>=4.8
+onnxruntime>=1.18
+einops>=0.7
+scipy
+tqdm

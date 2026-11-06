@@ -6,6 +6,11 @@ data/
 .env
 .env.*
 
+# 영상 엔진 설치물 (install_engines.bat 이 받음, 약 10GB)
+engines/.venv/
+engines/MuseTalk/
+engines/models/
+
 # 직접 받아 넣는 프로그램·글꼴
 ffmpeg/
 fonts/*.otf

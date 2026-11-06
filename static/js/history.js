@@ -34,9 +34,11 @@ App.pages.history = {
         v.has_raw ? h('div', { class: 'small muted' }, '아바타 영상은 저장돼 있습니다') : null,
         h('button', { class: 'btn ghost sm', style: { padding: '2px 0' }, onclick: () => modal({ title: '실패 이유', body: h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0, fontSize: '13px' } }, v.error || '이유를 받지 못했습니다.') }) }, '이유 보기'));
       const el = Math.max(0, nowT() - (v.started_at || v.created_at));
+      const NAMES = { voice: '음성', lipsync: '입모양', compose: '꾸미기' };
+      const frac = v.progress == null ? null : v.progress;
       return h('div', {},
-        h('div', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'tag brand' }, `만드는 중 ${v.stage}/3`), h('span', { class: 'small muted mono' }, fmtDur(el))),
-        h('div', { class: 'progress' + (v.stage === 1 ? ' indet' : ''), style: { marginTop: '6px' } }, h('i', { style: { width: `${(v.stage / 3) * 100}%` } })),
+        h('div', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'tag brand' }, `${v.stage}/3 ${NAMES[v.status] || ''}`), h('span', { class: 'small muted mono' }, fmtDur(el))),
+        h('div', { class: 'progress' + (frac == null ? ' indet' : ''), style: { marginTop: '6px' } }, h('i', { style: { width: `${Math.round((frac || 0) * 100)}%` } })),
         v.message ? h('div', { class: 'small muted', style: { maxWidth: '240px' } }, v.message) : null);
     }
 
@@ -47,24 +49,24 @@ App.pages.history = {
         a.push(h('a', { class: 'icon-btn', href: `/api/videos/${v.id}/file`, target: '_blank', title: '새 창에서 열기', 'aria-label': '새 창에서 열기' }, icon('ext')));
         a.push(iconBtn('link', '환자용 공유 링크', () => shareModal(v, load)));
         a.push(h('a', { class: 'icon-btn', href: `/api/videos/${v.id}/file?download=1`, title: '내려받기 (mp4)', 'aria-label': '내려받기' }, icon('down')));
-        a.push(iconBtn('layers', '꾸미기 바꾸기 (아바타 비용 없음)', () => go(`create?recompose=${v.id}`), { disabled: !v.has_raw }));
-        a.push(iconBtn('edit', '대사 고쳐 다시 만들기', () => remakeModal(v, load)));
+        a.push(iconBtn('layers', '꾸미기 바꾸기 (자막·로고만 다시, 몇 분)', () => go(`create?recompose=${v.id}`), { disabled: !v.has_raw }));
+        a.push(iconBtn('edit', v.voice_mode === 'recording' ? '직접 녹음 영상은 대사를 고치려면 새로 녹음해야 합니다' : '대사 고쳐 다시 만들기',
+          () => remakeModal(v, load), { disabled: v.voice_mode === 'recording' }));
       }
       if (v.status === 'failed') {
         a.push(h('button', { class: 'btn sm', onclick: async () => {
-          if (!v.has_raw && !v.demo && !await confirmBox({ title: '처음부터 다시 시도', message: '아바타 영상부터 다시 만듭니다. HeyGen 비용이 다시 들 수 있습니다.', okLabel: '다시 시도' })) return;
           try { await api('POST', `/api/videos/${v.id}/retry`); toast('다시 시도합니다.'); load(); } catch (e) { fail(e); }
-        } }, v.has_raw ? '꾸미기만 다시 시도' : '다시 시도'));
+        } }, v.has_raw ? '꾸미기만 다시 시도' : '이어서 다시 시도'));
         if (v.has_raw) a.push(iconBtn('layers', '꾸미기 바꾸기', () => go(`create?recompose=${v.id}`)));
       }
       if (v.status === 'queued') {
         a.push(h('button', { class: 'btn sm', onclick: async () => {
-          if (!await confirmBox({ title: '대기 취소', message: '대기열에서 빼면 이 영상은 만들어지지 않습니다. 아직 보내지 않아 비용은 나가지 않습니다.', okLabel: '대기 취소', danger: true })) return;
+          if (!await confirmBox({ title: '대기 취소', message: '대기열에서 빼면 이 영상은 만들어지지 않습니다.', okLabel: '대기 취소', danger: true })) return;
           try { await api('POST', `/api/videos/${v.id}/cancel`); toast('대기를 취소했습니다.'); load(); } catch (e) { fail(e); }
         } }, '대기 취소'));
       }
-      if (v.has_raw && v.status !== 'queued') a.push(h('a', { class: 'btn sm ghost', href: `/api/videos/${v.id}/file?kind=raw`, target: '_blank', title: '자막·로고를 입히기 전 아바타 영상' }, '원본'));
-      if (!['avatar', 'timing', 'compose'].includes(v.status)) {
+      if (v.has_raw && v.status !== 'queued') a.push(h('a', { class: 'btn sm ghost', href: `/api/videos/${v.id}/file?kind=raw`, target: '_blank', title: '자막·로고를 입히기 전, 음성과 입모양만 있는 영상' }, '원본'));
+      if (!['voice', 'lipsync', 'compose'].includes(v.status)) {
         a.push(iconBtn('trash', '삭제', async () => {
           if (!await confirmTyped({ title: '영상 삭제', message: `「${v.title}」을(를) 생성 이력과 PC 에서 지웁니다. 공유 링크도 더 이상 열리지 않습니다. 되돌릴 수 없습니다.`, word: '삭제' })) return;
           try { await api('DELETE', `/api/videos/${v.id}`); toast('삭제했습니다.'); load(); } catch (e) { fail(e); }
@@ -88,6 +90,8 @@ App.pages.history = {
               h('div', { class: 'sub row', style: { gap: '4px' } },
                 v.parent_id ? h('span', { class: 'tag' }, '꾸미기 바꿈') : null,
                 v.demo ? h('span', { class: 'tag ok' }, '연습') : null,
+                v.voice_mode === 'recording' ? h('span', { class: 'tag' }, '직접 녹음') : v.voice_mode === 'silent' ? h('span', { class: 'tag' }, '소리 없음') : null,
+                !v.lipsync && v.voice_mode !== 'silent' ? h('span', { class: 'tag' }, '입모양 없이') : null,
                 !v.reviewed ? h('span', { class: 'tag warn' }, '검수 전 번역') : null,
                 v.share_enabled ? h('span', { class: 'tag brand' }, '공유 중') : null,
                 h('span', {}, `${v.avatar_name || ''} · ${v.aspect}`))),
@@ -106,7 +110,7 @@ App.pages.history = {
     await load();
     // 만드는 중인 영상이 있으면 몇 초마다 새로 읽기
     App.timers.push(setInterval(() => {
-      if (videos.some((v) => ['queued', 'avatar', 'timing', 'compose'].includes(v.status))) load();
+      if (videos.some((v) => ['queued', 'voice', 'lipsync', 'compose'].includes(v.status))) load();
       else draw();
     }, 4000));
   },
@@ -151,7 +155,7 @@ async function shareModal(v, reload) {
 function remakeModal(v, reload) {
   const steps = v.steps.map((s) => ({ ...s }));
   const box = h('div', { class: 'stack' },
-    h('div', { class: 'notice warn' }, '같은 아바타·음성·화면·자막 설정으로 새 영상을 처음부터 만듭니다. ', v.demo ? '(연습 영상이라 비용은 없습니다)' : 'HeyGen 비용이 전체 길이만큼 다시 듭니다.', ' 원래 영상은 그대로 남습니다.'),
+    h('div', { class: 'notice' }, '같은 아바타·목소리·자막 설정으로 음성부터 새로 만듭니다. 원래 영상은 그대로 남습니다.'),
     steps.map((s, i) => {
       const ta = h('textarea', { class: 'input', rows: 3 }); ta.value = s.body;
       ta.addEventListener('input', () => { s.body = ta.value; });

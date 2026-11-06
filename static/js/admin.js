@@ -71,51 +71,51 @@ App.pages.settings = {
     function markDirty() {
       const dirty = JSON.stringify(cur) !== JSON.stringify(saved);
       put(savebar, 
-        h('span', { class: 'small muted grow' }, dirty ? '저장하지 않은 변경이 있습니다.' : '브랜딩·자막 기본값·언어·화질은 아래 버튼으로 함께 저장됩니다. HeyGen 연결·로고·글꼴은 누르는 즉시 저장됩니다.'),
+        h('span', { class: 'small muted grow' }, dirty ? '저장하지 않은 변경이 있습니다.' : '브랜딩·자막 기본값·언어·엔진 설정은 아래 버튼으로 함께 저장됩니다. 로고·글꼴·Claude 키는 누르는 즉시 저장됩니다.'),
         h('button', { class: 'btn', disabled: !dirty, onclick: () => App.render() }, '되돌리기'),
         h('button', { class: 'btn primary', disabled: !dirty || !op, onclick: async () => {
           try {
-            await api('PUT', '/api/settings', { org_name: cur.org_name, org_name_i18n: cur.org_name_i18n, org_desc: cur.org_desc, languages: cur.languages, default_language: cur.default_language, caption_style: cur.caption_style, resolution: cur.resolution, claude_model: cur.claude_model, public_base_url: cur.public_base_url });
+            await api('PUT', '/api/settings', { org_name: cur.org_name, org_name_i18n: cur.org_name_i18n, org_desc: cur.org_desc, languages: cur.languages, default_language: cur.default_language, caption_style: cur.caption_style, tts_precision: cur.tts_precision, lipsync_batch: cur.lipsync_batch, claude_model: cur.claude_model, public_base_url: cur.public_base_url });
             toast('설정을 저장했습니다.'); await App.reloadSettings(); App.render();
           } catch (e) { fail(e); }
         } }, '설정 저장'));
     }
     const bind = (el, key, sub) => { el.addEventListener('input', () => { if (sub) cur[key][sub] = el.value; else cur[key] = el.value; markDirty(); }); return el; };
 
-    /* --- HeyGen --- */
-    function heygenCard() {
-      const hg = S.heygen;
-      const stateTag = hg.state === 'connected' ? h('span', { class: 'tag ok' }, '연결됨') : hg.state === 'error' ? h('span', { class: 'tag bad' }, '확인 실패') : h('span', { class: 'tag' }, '연결 안 됨');
-      const keyIn = h('input', { class: 'input', type: 'password', autocomplete: 'off', placeholder: hg.state === 'disconnected' ? 'API 키를 입력하세요' : '새 API 키를 입력하세요', disabled: dis });
-      const showForm = hg.state !== 'connected';
-      const formBox = h('div', { class: showForm ? '' : 'hidden', style: { marginTop: '10px' } },
-        h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, keyIn, h('button', { class: 'btn primary', disabled: dis, onclick: async (e) => {
-          e.target.disabled = true; e.target.textContent = '확인 중…';
-          try { await api('POST', '/api/connection/heygen', { api_key: keyIn.value }); toast('HeyGen 에 연결했습니다.'); App.render(); }
-          catch (er) { fail(er); e.target.disabled = false; e.target.textContent = '저장하고 연결 확인'; }
-        } }, '저장하고 연결 확인')),
-        h('div', { class: 'hint' }, 'HeyGen 사이트(app.heygen.com) → 설정 → API 에서 발급합니다. 저장 후에는 끝 4자리만 보입니다. 키는 이 PC 의 data 폴더에만 저장됩니다.'));
+    /* --- 영상 엔진 (이 PC 의 그래픽카드로 목소리·입모양을 만듦) --- */
+    function engineCard() {
+      const e = S.engine || {};
+      const okTag = (ok, yes, no) => h('span', { class: 'tag ' + (ok ? 'ok' : 'warn') }, ok ? yes : no);
+      const stepper = (() => {
+        const inp = h('input', { type: 'number', min: 1, max: 32, value: cur.lipsync_batch, disabled: dis, class: 'input', style: { width: '90px' } });
+        inp.addEventListener('input', () => { cur.lipsync_batch = parseInt(inp.value, 10) || 8; markDirty(); });
+        return inp;
+      })();
+      const prec = h('div', { class: 'seg' }, [['float32', '정확 (기본)'], ['float16', '빠름 · 메모리 적게']].map(([v, l]) =>
+        h('button', { type: 'button', disabled: dis, class: cur.tts_precision === v ? 'on' : '', onclick: (ev) => {
+          cur.tts_precision = v; markDirty(); [...ev.target.parentNode.children].forEach((b) => b.classList.toggle('on', b === ev.target));
+        } }, l)));
       return h('div', { class: 'card' },
-        h('div', { class: 'row between' }, h('h2', {}, 'HeyGen 연결'), stateTag),
-        h('p', { class: 'desc' }, 'API 키를 저장하면 병원 아바타를 불러와 영상을 만들 수 있습니다.'),
-        hg.state === 'connected' ? h('dl', { class: 'kv' },
-          h('dt', {}, '계정'), h('dd', {}, hg.info.username || '—'), h('dt', {}, '이메일'), h('dd', {}, hg.info.email || '—'),
-          h('dt', {}, 'API 키'), h('dd', { class: 'mono' }, `********${hg.key_tail}`),
-          h('dt', {}, '잔액'), h('dd', {}, hg.info.balance || '확인 불가', hg.info.auto_reload === false ? h('span', { class: 'tag warn', style: { marginLeft: '6px' } }, '자동 충전 꺼짐') : null)) : null,
-        hg.state === 'error' ? h('div', { class: 'notice bad' }, hg.error) : null,
-        hg.state === 'connected' ? h('p', { class: 'small muted', style: { margin: 0 } }, '계정 정보는 일부만 보여 줍니다.') : null,
-        hg.state !== 'disconnected' ? h('div', { class: 'row', style: { marginTop: '10px' } },
-          h('button', { class: 'btn', disabled: dis, onclick: () => formBox.classList.toggle('hidden') }, 'API 키 바꾸기'),
-          h('button', { class: 'btn danger', disabled: dis, onclick: async () => {
-            if (!await confirmTyped({ title: 'HeyGen 연결 해제', message: '연결을 해제하면 영상을 만들 수 없고, 진행 중인 영상은 일시정지됩니다. 키를 다시 연결하면 이어서 진행됩니다.', word: '해제' })) return;
-            try { await api('DELETE', '/api/connection/heygen'); toast('연결을 해제했습니다.'); App.render(); } catch (e) { fail(e); }
-          } }, '연결 해제…')) : null,
-        formBox,
-        h('div', { class: 'field', style: { marginTop: '14px' } }, h('label', { class: 'lbl' }, '영상 화질'),
-          (() => { const sel = h('select', { class: 'input', style: { width: 'auto' }, disabled: dis, onchange: () => { cur.resolution = sel.value; markDirty(); } },
-            h('option', { value: '1080p', selected: cur.resolution === '1080p' }, '1080p (권장)'), h('option', { value: '720p', selected: cur.resolution === '720p' }, '720p')); return sel; })(),
-          h('div', { class: 'hint' }, 'HeyGen 에 요청하는 아바타 영상 화질입니다. 요금제에 따라 1080p 가 안 될 수 있습니다.')),
-        !S.ffmpeg ? h('div', { class: 'notice bad', style: { marginTop: '12px' } }, 'ffmpeg 를 찾지 못했습니다. 자막 합성에 꼭 필요합니다. README 의 「ffmpeg 설치」를 따라 설치한 뒤 프로그램을 다시 켜 주세요.') : null);
+        h('div', { class: 'row between' }, h('h2', {}, '영상 엔진 (이 PC 에서 직접 만들기)'),
+          h('button', { class: 'btn sm', onclick: async (ev) => {
+            ev.target.disabled = true; ev.target.textContent = '확인 중… (최대 1분)';
+            try { await api('GET', '/api/engine?refresh=1'); await App.reloadSettings(); App.render(); } catch (er) { fail(er); ev.target.disabled = false; }
+          } }, icon('refresh'), '다시 확인')),
+        h('p', { class: 'desc' }, '외부 서비스 없이 이 PC 의 그래픽카드로 원장님 목소리(Qwen3-TTS)와 입모양(MuseTalk 1.5)을 만듭니다.'),
+        h('dl', { class: 'kv' },
+          h('dt', {}, '설치'), h('dd', {}, okTag(e.installed, '설치됨', '설치 안 됨')),
+          h('dt', {}, '그래픽카드'), h('dd', {}, e.cuda ? `${e.gpu || 'NVIDIA'} · ${e.vram_gb || '?'}GB` : h('span', { class: 'tag warn' }, e.installed ? '못 찾음 (드라이버 확인)' : '—')),
+          h('dt', {}, '목소리 엔진'), h('dd', {}, okTag(e.tts_ready, '준비됨', '준비 안 됨')),
+          h('dt', {}, '입모양 엔진'), h('dd', {}, okTag(e.lipsync_ready, '준비됨', '준비 안 됨'))),
+        !e.installed || !e.tts_ready || !e.lipsync_ready ? h('div', { class: 'notice warn' },
+          h('b', {}, '설치 방법: '), '프로그램 폴더의 ', h('b', {}, 'install_engines.bat'), ' 을 더블클릭합니다. 약 10GB 를 내려받고 20~60분 걸립니다. 끝나면 이 화면에서 「다시 확인」을 누르세요.',
+          e.errors && e.errors.length ? h('details', { style: { marginTop: '8px' } }, h('summary', { style: { cursor: 'pointer' } }, '자세한 상태'),
+            h('pre', { style: { whiteSpace: 'pre-wrap', fontSize: '12px', margin: '6px 0 0' } }, e.errors.join('\n'))) : null) : null,
+        e.installed && !e.cuda ? h('div', { class: 'notice bad', style: { marginTop: '8px' } }, '그래픽카드(CUDA)를 쓰지 못하고 있습니다. NVIDIA 드라이버를 최신으로 설치한 뒤 PC 를 다시 켜 주세요. 그래픽카드 없이도 돌아가지만 영상 하나에 몇 시간 걸릴 수 있습니다.') : null,
+        h('div', { class: 'two', style: { marginTop: '14px' } },
+          h('div', {}, h('label', { class: 'lbl' }, '목소리 정밀도'), prec, h('div', { class: 'hint' }, '목소리가 깨지면 「정확」, 메모리 부족 오류가 나면 「빠름」.')),
+          h('div', {}, h('label', { class: 'lbl' }, '입모양 한 번에 처리할 장수'), stepper, h('div', { class: 'hint' }, '기본 8. 메모리 부족 오류가 나면 4 로 줄이세요.'))),
+        !S.ffmpeg ? h('div', { class: 'notice bad', style: { marginTop: '12px' } }, 'ffmpeg 를 찾지 못했습니다. 음성·영상 처리에 꼭 필요합니다. README 의 「ffmpeg 설치」를 따라 설치한 뒤 프로그램을 다시 켜 주세요.') : null);
     }
 
     /* --- Claude --- */
@@ -218,7 +218,7 @@ App.pages.settings = {
       const list = h('div', {});
       const draw = () => put(list, ...cur.languages.map((l) => h('div', { class: 'lang-row' },
         h('b', {}, l.label), h('span', { class: 'code' }, l.code),
-        !S.language_presets.some((p) => p.code === l.code) ? h('span', { class: 'tag warn', title: 'HeyGen 목소리 검색용 이름을 모르는 언어입니다' }, '목소리 직접 고르기') : null,
+        !(S.language_presets.find((p) => p.code === l.code) || {}).tts ? h('span', { class: 'tag warn', title: '목소리 엔진이 이 언어를 지원하지 않아 직접 녹음만 쓸 수 있습니다' }, '직접 녹음만') : null,
         h('span', { class: 'grow' }),
         l.code === cur.default_language ? h('span', { class: 'tag brand' }, '기본언어') :
           h('button', { class: 'btn sm', disabled: dis, onclick: () => { cur.default_language = l.code; markDirty(); draw(); } }, '기본으로 지정'),
@@ -243,9 +243,9 @@ App.pages.settings = {
     let langEl = langCard();
     App.pages.settings._redrawLang = () => { const n = langCard(); langEl.replaceWith(n); langEl = n; };
 
-    add(main, pageHead('설정', '병원 정보와 HeyGen 연결, 자막 기본값을 관리합니다.'),
+    add(main, pageHead('설정', '영상 엔진 상태와 병원 정보, 자막 기본값을 관리합니다.'),
       !op ? h('div', { class: 'notice', style: { maxWidth: '920px', marginBottom: '16px' } }, '담당자 계정은 설정을 볼 수만 있습니다. 바꾸려면 운영자에게 요청하세요.') : null,
-      h('div', { class: 'settings-grid' }, heygenCard(), brandCard(), captionCard(), fontCard(), langEl, shareUrlCard(), claudeCard()),
+      h('div', { class: 'settings-grid' }, engineCard(), brandCard(), captionCard(), fontCard(), langEl, shareUrlCard(), claudeCard()),
       savebar);
     markDirty();
   },
@@ -324,25 +324,26 @@ App.pages.guide = {
     add(main, pageHead('사용 가이드', '4단계를 차례로 따라 하면 영상이 완성됩니다.'),
       h('div', { class: 'guide-steps' },
         step(0, '처음 한 번: 준비', [
-          'HeyGen 사이트에서 원장님 아바타(디지털 트윈 또는 포토 아바타)를 먼저 만들어 둡니다. 아바타와 목소리는 HeyGen 에 있어야 목록에 나옵니다.',
-          '설정 > HeyGen 연결에 API 키를 넣고 「저장하고 연결 확인」을 누릅니다.',
-          '설정 > 브랜딩에서 병원명과 로고(PNG)를 올리고, 병원 기본 자막 설정을 정한 뒤 「설정 저장」을 누릅니다.',
-          'HeyGen 연결 전에도 「연습용 아바타」로 자막·로고가 어떻게 보이는지 무료로 시험할 수 있습니다.']),
+          '프로그램 폴더의 install_engines.bat 을 실행해 영상 엔진(목소리·입모양)을 설치합니다. 약 10GB, 20~60분. 설치가 끝나면 설정 → 영상 엔진에서 「다시 확인」.',
+          '[아바타·목소리]에서 원장님이 정면에서 찍은 15~20초 영상을 올립니다. 입모양 준비가 자동으로 시작됩니다 (몇 분).',
+          '같은 화면에서 정해진 문장을 15~30초 읽어 목소리를 등록하고 「시험 듣기」로 확인합니다.',
+          '설정 → 브랜딩에서 병원명과 로고(PNG)를 올리고, 병원 기본 자막 설정을 정한 뒤 「설정 저장」을 누릅니다.',
+          '엔진 설치 전에도 「연습용 아바타」와 「직접 녹음」 「소리 없이」로 화면과 자막을 시험할 수 있습니다.']),
         step(1, '스크립트 등록', [
           '「+ 신규 등록」을 누르고 원고를 붙여넣습니다. 빈 줄로 나눈 문단이 한 단계가 됩니다(최대 4단계).',
-          '문단 첫 줄이 짧으면 단계 제목이 됩니다. 단계 제목은 영상 배지에만 나오고 아바타는 읽지 않습니다.',
-          '문장 끝에는 마침표를 꼭 넣어 주세요. 자막이 문장 단위로 자연스럽게 나뉩니다.',
-          'SRT 자막 파일이나 백업(JSON) 파일로도 원고를 불러올 수 있습니다. Claude 를 연결하면 「AI 제안」으로 초안을 받을 수 있습니다.']),
+          '문단 첫 줄이 짧으면 단계 제목이 됩니다. 단계 제목은 영상 배지에만 나오고 읽지 않습니다.',
+          '문장 끝에는 마침표를 꼭 넣어 주세요. 목소리 엔진은 문장 단위로 읽고, 자막도 문장 단위로 나뉩니다.',
+          '숫자·영어 약어는 소리 나는 대로 적으면 더 정확하게 읽습니다 (예: 5mm → 오 밀리미터).']),
         step(2, '영상 만들기', [
-          '스크립트와 아바타를 고릅니다. 가로형 아바타는 16:9, 세로형은 9:16 으로 자동 적용됩니다.',
+          '스크립트·아바타·목소리를 고릅니다. 목소리는 「등록한 목소리로 읽기」, 「직접 녹음」, 「소리 없이(연습)」 중에서 고릅니다.',
+          '「입모양 맞추기」를 켜면 원장님 입이 음성에 맞춰 움직입니다. 끄면 아바타 영상을 그대로 반복합니다.',
           '오른쪽 미리보기에서 병원명·단계 배지·자막·로고 위치를 확인하고, 필요하면 「자막 표시 설정」을 펼쳐 이 영상만 바꿉니다.',
-          '「영상 만들기」를 한 번 누르면 끝입니다. 보통 5~10분 걸리고, 브라우저를 닫아도 검은 명령창이 켜져 있으면 계속 만들어집니다.',
-          '여러 개를 연달아 눌러도 대기열에서 차례로 만들어집니다.']),
+          '「영상 만들기」를 누르면 끝입니다. 영상 1분에 보통 5~15분 걸리고, 브라우저를 닫아도 검은 명령창이 켜져 있으면 계속 만들어집니다.']),
         step(3, '생성 이력', [
           '완성된 영상을 재생하고, 내려받고(mp4), 환자용 공유 링크를 만듭니다.',
-          '자막이 어색하면 「꾸미기 바꾸기」로 고칩니다. 아바타 영상을 다시 만들지 않으므로 HeyGen 비용이 들지 않습니다.',
-          '대사를 고치려면 「대사 고쳐 다시 만들기」를 누릅니다. 처음부터 다시 만들어 비용이 다시 듭니다.',
-          '실패한 영상은 「이유 보기」로 까닭을 확인하고, 아바타 영상이 저장돼 있으면 「꾸미기만 다시 시도」를 누릅니다.']),
+          '자막이 어색하면 「꾸미기 바꾸기」로 고칩니다. 음성·입모양은 그대로 두고 자막만 다시 입혀 몇 분이면 끝납니다.',
+          '대사를 고치려면 「대사 고쳐 다시 만들기」를 누릅니다 (등록한 목소리로 만든 영상만).',
+          '실패한 영상은 「이유 보기」로 까닭을 확인하고 「다시 시도」를 누르면 실패한 단계부터 이어서 합니다.']),
         step(4, '환자에게 보내기', [
           '공유 링크는 로그인 없이 그 영상만 볼 수 있는 주소입니다. 「링크 끄기」를 누르기 전까지 계속 열립니다.',
           '안내문구 설정에서 환자 화면의 상단 문구·안내 본문·AI 고지 문구를 정합니다.',

@@ -304,3 +304,4 @@ details.fold[open] > summary::after { content: "▴"; }
   .two { grid-template-columns: 1fr; }
   .pv.portrait { height: 380px; }
 }
+.btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }

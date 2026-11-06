@@ -12,12 +12,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
-from . import ai, compose, demo, heygen, worker
+from . import ai, compose, demo, engines, media, worker
 from .auth import (COOKIE, USERNAME_RE, account_count, create_account, current_user,
                    end_sessions, hash_password, new_session, normalize_username,
                    password_problem, require_operator, require_user, try_login)
-from .config import (DEFAULT_CLAUDE_MODEL, FONT_DIR, LANGUAGE_PRESETS, LOGO_DIR,
-                     MAX_VIDEO_SECONDS, SESSION_HOURS, STATIC_DIR, STEP_COLORS, VIDEO_DIR)
+from .config import (AVATAR_DIR, DEFAULT_CLAUDE_MODEL, FONT_DIR, LANGUAGE_PRESETS, LOGO_DIR,
+                     MAX_STEPS, MAX_VIDEO_SECONDS, REC_DIR, SESSION_HOURS, STATIC_DIR, STEP_COLORS,
+                     VIDEO_DIR, VOICE_DIR, WORK_DIR, tts_language)
 from .db import (DEFAULT_SHARE, DEFAULT_STYLE, db, get_setting, init_db, merged_style, now,
                  row, rows, set_setting)
 from .textutil import clean_steps, clean_title, estimate_seconds, parse_srt
@@ -217,24 +218,6 @@ async def reset_password(username: str, request: Request, op=Depends(require_ope
 # =====================================================================
 # 설정
 # =====================================================================
-_heygen_cache = {"t": 0, "data": None}
-
-
-def heygen_status(force=False):
-    key = get_setting("heygen_api_key")
-    if not key:
-        return {"state": "disconnected"}
-    if not force and _heygen_cache["data"] and time.time() - _heygen_cache["t"] < 60:
-        return _heygen_cache["data"]
-    try:
-        info = heygen.get_user(key)
-        data = {"state": "connected", "info": info, "key_tail": key[-4:]}
-    except Exception as e:
-        data = {"state": "error", "error": str(e), "key_tail": key[-4:]}
-    _heygen_cache.update(t=time.time(), data=data)
-    return data
-
-
 def _fonts():
     out = []
     for f in sorted(FONT_DIR.glob("*")):
@@ -254,7 +237,7 @@ def _logo_info():
 
 
 PUBLIC_KEYS = ["org_name", "org_name_i18n", "org_desc", "default_language", "languages",
-               "caption_style", "resolution", "claude_model", "public_base_url"]
+               "caption_style", "tts_precision", "lipsync_batch", "claude_model", "public_base_url"]
 
 
 @app.get("/api/settings")
@@ -266,7 +249,7 @@ def get_settings(user=Depends(require_user)):
     return {
         "settings": s,
         "default_style": DEFAULT_STYLE,
-        "heygen": heygen_status(),
+        "engine": engines.status(),
         "claude": {"configured": bool(get_setting("anthropic_api_key"))},
         "ffmpeg": compose.ffmpeg_ok(),
         "fonts": _fonts(),
@@ -302,8 +285,16 @@ async def put_settings(request: Request, op=Depends(require_operator)):
         set_setting("default_language", d["default_language"])
     if "caption_style" in d:
         set_setting("caption_style", validate_style(d["caption_style"]))
-    if "resolution" in d and d["resolution"] in ("720p", "1080p"):
-        set_setting("resolution", d["resolution"])
+    if "tts_precision" in d and d["tts_precision"] in ("float32", "float16"):
+        set_setting("tts_precision", d["tts_precision"])
+    if "lipsync_batch" in d:
+        try:
+            b = int(d["lipsync_batch"])
+        except (TypeError, ValueError):
+            bad("입모양 처리 장수에 숫자를 넣어 주세요.")
+        if not 1 <= b <= 32:
+            bad("입모양 처리 장수는 1~32 사이여야 합니다.")
+        set_setting("lipsync_batch", b)
     if "claude_model" in d:
         set_setting("claude_model", str(d["claude_model"] or "").strip()[:80])
     if "public_base_url" in d:
@@ -349,29 +340,6 @@ def validate_style(s):
     return out
 
 
-@app.post("/api/connection/heygen")
-async def connect_heygen(request: Request, op=Depends(require_operator)):
-    d = await body(request)
-    key = str(d.get("api_key") or "").strip()
-    if len(key) < 10:
-        bad("API 키를 입력해 주세요.")
-    try:
-        info = heygen.get_user(key)
-    except Exception as e:
-        bad(f"연결 확인에 실패했습니다: {e}")
-    set_setting("heygen_api_key", key)
-    _heygen_cache.update(t=0, data=None)
-    worker.wake()
-    return {"ok": True, "info": info}
-
-
-@app.delete("/api/connection/heygen")
-def disconnect_heygen(op=Depends(require_operator)):
-    set_setting("heygen_api_key", "")
-    _heygen_cache.update(t=0, data=None)
-    return {"ok": True}
-
-
 @app.post("/api/connection/claude")
 async def connect_claude(request: Request, op=Depends(require_operator)):
     d = await body(request)
@@ -387,8 +355,13 @@ async def connect_claude(request: Request, op=Depends(require_operator)):
 
 @app.get("/api/features")
 def features(user=Depends(require_user)):
-    return {"ai": bool(get_setting("anthropic_api_key")),
-            "heygen": bool(get_setting("heygen_api_key")), "ffmpeg": compose.ffmpeg_ok()}
+    return {"ai": bool(get_setting("anthropic_api_key")), "engine": engines.status(),
+            "ffmpeg": compose.ffmpeg_ok()}
+
+
+@app.get("/api/engine")
+def engine_status(refresh: int = 0, user=Depends(require_user)):
+    return engines.status(force=bool(refresh))
 
 
 # ---- 로고 ----
@@ -698,41 +671,295 @@ async def ai_draft(request: Request, user=Depends(require_user)):
 
 
 # =====================================================================
-# 아바타 · 목소리
+# 아바타 · 목소리 (이 PC 안에 저장)
 # =====================================================================
+MAX_UPLOAD = 500 * 1024 * 1024
+
+
+async def _save_upload(file: UploadFile, dest: Path, limit=MAX_UPLOAD):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    size = 0
+    with open(dest, "wb") as f:
+        while True:
+            chunk = await file.read(1 << 20)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                f.close()
+                dest.unlink(missing_ok=True)
+                bad(f"파일이 너무 큽니다 (최대 {limit // 1024 // 1024}MB).")
+            f.write(chunk)
+    if size == 0:
+        dest.unlink(missing_ok=True)
+        bad("빈 파일입니다.")
+    return dest
+
+
+def _avatar_out(r):
+    return {
+        "id": str(r["id"]), "name": r["name"], "kind": r["kind"], "orientation": r["orientation"] or "landscape",
+        "width": r["width"], "height": r["height"], "status": r["status"], "progress": r["progress"],
+        "message": r["message"], "error": r["error"], "created_at": r["created_at"], "demo": False,
+        "preview_image": f"/api/avatars/{r['id']}/preview?t={int(r['prepared_at'] or r['created_at'])}" if r["preview_path"] else None,
+    }
+
+
+def _get_avatar(aid):
+    with db() as c:
+        r = row(c.execute("SELECT * FROM avatars WHERE id=?", (aid,)).fetchone())
+    if not r:
+        bad("아바타를 찾지 못했습니다.", 404)
+    return r
+
+
 @app.get("/api/avatars")
-def avatars(ownership: str = "private", token: str = "", user=Depends(require_user)):
-    key = get_setting("heygen_api_key")
-    items, next_token, error = [], None, None
-    if key:
-        try:
-            r = heygen.list_looks(key, "public" if ownership == "public" else "private", token or None)
-            items, next_token = r["items"], r["next_token"]
-        except heygen.HeyGenError as e:
-            error = str(e)
-    if ownership != "public" and not token:
-        items = items + demo.DEMO_AVATARS
-    return {"items": items, "next_token": next_token, "connected": bool(key), "error": error}
+def list_avatars(user=Depends(require_user)):
+    with db() as c:
+        rs = c.execute("SELECT * FROM avatars ORDER BY created_at DESC").fetchall()
+    return {"items": [_avatar_out(r) for r in rs] + demo.DEMO_AVATARS, "engine": engines.status()}
+
+
+@app.post("/api/avatars")
+async def add_avatar(name: str = Form(...), consent: str = Form(""), file: UploadFile = File(...),
+                     user=Depends(require_user)):
+    if consent != "yes":
+        bad("본인이거나 본인 동의를 받은 얼굴인지 확인하는 칸에 체크해 주세요.")
+    name = name.strip()[:40]
+    if not name:
+        bad("아바타 이름을 입력해 주세요.")
+    ext = Path(file.filename or "").suffix.lower()
+    if ext in (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"):
+        kind = "video"
+    elif ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
+        kind = "photo"
+    else:
+        bad("영상(mp4·mov) 또는 사진(jpg·png) 파일을 올려 주세요.")
+    if not compose.ffmpeg_ok():
+        bad("ffmpeg 가 설치되어 있지 않습니다. README 를 따라 설치해 주세요.")
+    with db() as c:
+        cur = c.execute("INSERT INTO avatars(name, kind, src_path, status, progress, message, created_by, created_at) "
+                        "VALUES(?,?,?,?,?,?,?,?)", (name, kind, "", "uploading", 0, "올리는 중", user["username"], now()))
+        aid = cur.lastrowid
+    folder = AVATAR_DIR / str(aid)
+    src = await _save_upload(file, folder / f"upload{ext}")
+    import anyio
+    try:
+        info = await anyio.to_thread.run_sync(lambda: media.normalize_avatar(kind, src, folder))
+    except Exception as e:
+        with db() as c:
+            c.execute("DELETE FROM avatars WHERE id=?", (aid,))
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+        bad(f"파일을 읽지 못했습니다: {str(e)[:300]}")
+    with db() as c:
+        c.execute("UPDATE avatars SET src_path=?, norm_path=?, preview_path=?, width=?, height=?, orientation=?, "
+                  "status='pending', message='대기 중' WHERE id=?",
+                  (str(src), info["norm"], info["preview"], info["width"], info["height"], info["orientation"], aid))
+    worker.wake()
+    return {"ok": True, "id": str(aid)}
+
+
+@app.post("/api/avatars/{aid}/prepare")
+def reprepare_avatar(aid: int, user=Depends(require_user)):
+    a = _get_avatar(aid)
+    if a["status"] in ("pending", "preparing"):
+        bad("이미 준비 중입니다.")
+    import shutil
+    if a["prep_dir"]:
+        shutil.rmtree(a["prep_dir"], ignore_errors=True)
+    engines.status(force=True)
+    with db() as c:
+        c.execute("UPDATE avatars SET status='pending', prep_dir=NULL, progress=0, error=NULL, message='대기 중' WHERE id=?", (aid,))
+    worker.wake()
+    return {"ok": True}
+
+
+@app.patch("/api/avatars/{aid}")
+async def rename_avatar(aid: int, request: Request, user=Depends(require_user)):
+    _get_avatar(aid)
+    name = str((await body(request)).get("name") or "").strip()[:40]
+    if not name:
+        bad("이름을 입력해 주세요.")
+    with db() as c:
+        c.execute("UPDATE avatars SET name=? WHERE id=?", (name, aid))
+    return {"ok": True}
+
+
+@app.delete("/api/avatars/{aid}")
+def delete_avatar(aid: int, user=Depends(require_user)):
+    a = _get_avatar(aid)
+    if a["status"] == "preparing":
+        bad("준비 중인 아바타는 지울 수 없습니다. 끝난 뒤 지워 주세요.")
+    with db() as c:
+        busy = c.execute("SELECT COUNT(*) FROM videos WHERE avatar_id=? AND status IN ('queued','voice','lipsync')",
+                         (str(aid),)).fetchone()[0]
+        if busy:
+            bad("이 아바타로 만들고 있는 영상이 있습니다. 끝난 뒤 지워 주세요.")
+        c.execute("DELETE FROM avatars WHERE id=?", (aid,))
+    import shutil
+    shutil.rmtree(AVATAR_DIR / str(aid), ignore_errors=True)
+    return {"ok": True}
+
+
+@app.get("/api/avatars/{aid}/preview")
+def avatar_preview(aid: int, user=Depends(require_user)):
+    a = _get_avatar(aid)
+    if not a["preview_path"] or not Path(a["preview_path"]).exists():
+        raise HTTPException(404)
+    return FileResponse(a["preview_path"], media_type="image/jpeg")
+
+
+@app.get("/api/avatars/{aid}/source")
+def avatar_source(aid: int, user=Depends(require_user)):
+    a = _get_avatar(aid)
+    if not a["norm_path"] or not Path(a["norm_path"]).exists():
+        raise HTTPException(404)
+    return FileResponse(a["norm_path"])
+
+
+# ---- 목소리 ----
+def _voice_out(r):
+    return {"id": r["id"], "name": r["name"], "language": r["language"], "ref_text": r["ref_text"],
+            "seconds": r["seconds"], "created_at": r["created_at"], "audio": f"/api/voices/{r['id']}/audio"}
+
+
+def _get_voice(vid):
+    with db() as c:
+        r = row(c.execute("SELECT * FROM voices WHERE id=?", (vid,)).fetchone())
+    if not r:
+        bad("목소리를 찾지 못했습니다.", 404)
+    return r
 
 
 @app.get("/api/voices")
-def voices(language: str = "", user=Depends(require_user)):
-    key = get_setting("heygen_api_key")
-    if not key:
-        return {"items": []}
-    name = next((p["heygen"] for p in LANGUAGE_PRESETS if p["code"] == language), None)
+def list_voices(user=Depends(require_user)):
+    with db() as c:
+        rs = c.execute("SELECT * FROM voices ORDER BY created_at DESC").fetchall()
+    return {"items": [_voice_out(r) for r in rs], "engine": engines.status()}
+
+
+@app.post("/api/voices")
+async def add_voice(name: str = Form(...), language: str = Form("ko-KR"), ref_text: str = Form(""),
+                    consent: str = Form(""), file: UploadFile = File(...), user=Depends(require_user)):
+    if consent != "yes":
+        bad("본인 목소리이거나 본인 동의를 받은 목소리인지 확인하는 칸에 체크해 주세요.")
+    name = name.strip()[:40]
+    ref_text = re.sub(r"\s+", " ", ref_text).strip()[:1000]
+    if not name:
+        bad("목소리 이름을 입력해 주세요.")
+    if len(ref_text) < 10:
+        bad("녹음할 때 읽은 문장을 그대로 적어 주세요. 정확할수록 목소리가 닮습니다.")
+    if not tts_language(language):
+        bad("이 언어는 목소리 엔진이 지원하지 않습니다.")
+    if not compose.ffmpeg_ok():
+        bad("ffmpeg 가 설치되어 있지 않습니다.")
+    ext = Path(file.filename or "rec.webm").suffix.lower() or ".webm"
+    tmp = await _save_upload(file, WORK_DIR / f"voice_upload_{secrets.token_hex(6)}{ext}", limit=50 * 1024 * 1024)
+    folder_tmp = VOICE_DIR / f"new_{secrets.token_hex(6)}"
+    folder_tmp.mkdir(parents=True, exist_ok=True)
+    import anyio
     try:
-        mine = heygen.list_voices(key, None, "private")
-        pub = heygen.list_voices(key, name, "public") if name else []
-    except heygen.HeyGenError as e:
+        secs = await anyio.to_thread.run_sync(lambda: media.to_wav(tmp, folder_tmp / "ref.wav", trim=True, loudnorm=True))
+    except Exception as e:
+        bad(f"녹음 파일을 읽지 못했습니다: {str(e)[:200]}")
+    finally:
+        tmp.unlink(missing_ok=True)
+    if secs < 5:
+        bad(f"녹음이 {secs:.1f}초로 너무 짧습니다. 10~30초 정도로 녹음해 주세요.")
+    if secs > 60:
+        bad(f"녹음이 {secs:.0f}초로 너무 깁니다. 30초 안팎이 가장 좋습니다 (최대 60초).")
+    with db() as c:
+        cur = c.execute("INSERT INTO voices(name, language, ref_path, ref_text, seconds, created_by, created_at) "
+                        "VALUES(?,?,?,?,?,?,?)", (name, language, "", ref_text, round(secs, 1), user["username"], now()))
+        vid = cur.lastrowid
+        folder = VOICE_DIR / str(vid)
+        folder_tmp.rename(folder)
+        c.execute("UPDATE voices SET ref_path=? WHERE id=?", (str(folder / "ref.wav"), vid))
+    return {"ok": True, "id": vid, "seconds": round(secs, 1)}
+
+
+@app.delete("/api/voices/{vid}")
+def delete_voice(vid: int, user=Depends(require_user)):
+    _get_voice(vid)
+    with db() as c:
+        busy = c.execute("SELECT COUNT(*) FROM videos WHERE voice_db_id=? AND status IN ('queued','voice')", (vid,)).fetchone()[0]
+        if busy:
+            bad("이 목소리로 만들고 있는 영상이 있습니다. 끝난 뒤 지워 주세요.")
+        c.execute("DELETE FROM voices WHERE id=?", (vid,))
+    import shutil
+    shutil.rmtree(VOICE_DIR / str(vid), ignore_errors=True)
+    return {"ok": True}
+
+
+@app.get("/api/voices/{vid}/audio")
+def voice_audio(vid: int, sample: int = 0, user=Depends(require_user)):
+    v = _get_voice(vid)
+    p = Path(v["ref_path"]).parent / "sample.wav" if sample else Path(v["ref_path"])
+    if not p.exists():
+        raise HTTPException(404)
+    return FileResponse(p, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/voices/{vid}/test")
+async def test_voice(vid: int, request: Request, user=Depends(require_user)):
+    """등록한 목소리로 짧은 문장을 읽어 봅니다 (모델을 불러오느라 30초~1분 걸림)"""
+    v = _get_voice(vid)
+    text = str((await body(request)).get("text") or "").strip()[:200]
+    if not text:
+        bad("읽어 볼 문장을 입력해 주세요.")
+    st = engines.status()
+    if not st.get("tts_ready"):
+        bad("목소리 엔진이 설치되지 않았습니다. 설정 → 영상 엔진을 확인해 주세요.")
+    if engines.GPU_LOCK.locked():
+        bad("지금 다른 영상을 만들고 있어 그래픽카드가 바쁩니다. 끝난 뒤 다시 들어 보세요.", 409)
+    from .config import TTS_MODEL_DIR
+    folder = Path(v["ref_path"]).parent
+    raw = folder / "sample_raw.wav"
+    job = {"model": str(TTS_MODEL_DIR), "language": tts_language(v["language"]), "ref_audio": v["ref_path"],
+           "ref_text": v["ref_text"], "dtype": get_setting("tts_precision") or "float32",
+           "items": [{"text": text, "out": str(raw)}]}
+    jp = folder / "sample_job.json"
+    jp.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+    import anyio
+    try:
+        await anyio.to_thread.run_sync(lambda: engines.run("tts_qwen.py", ["--job", jp], None, log_name=f"voice{vid}-test"))
+        await anyio.to_thread.run_sync(lambda: media.to_wav(raw, folder / "sample.wav", trim=True, loudnorm=True))
+    except engines.EngineError as e:
         bad(str(e))
-    return {"items": [dict(v, mine=True) for v in mine] + pub}
+    return {"ok": True, "audio": f"/api/voices/{vid}/audio?sample=1&t={int(time.time())}"}
+
+
+# ---- 영상마다 직접 녹음한 음성 ----
+@app.post("/api/recordings")
+async def upload_recording(file: UploadFile = File(...), user=Depends(require_user)):
+    ext = Path(file.filename or "rec.webm").suffix.lower() or ".webm"
+    token = secrets.token_hex(10)
+    tmp = await _save_upload(file, REC_DIR / f"{token}_upload{ext}", limit=100 * 1024 * 1024)
+    import anyio
+    try:
+        secs = await anyio.to_thread.run_sync(lambda: media.to_wav(tmp, REC_DIR / f"{token}.wav", trim=True, loudnorm=True))
+    except Exception as e:
+        bad(f"녹음 파일을 읽지 못했습니다: {str(e)[:200]}")
+    finally:
+        tmp.unlink(missing_ok=True)
+    if secs < 0.5:
+        bad("녹음에 소리가 거의 없습니다. 다시 녹음해 주세요.")
+    return {"id": token, "seconds": round(secs, 1)}
+
+
+def _recording_path(token):
+    if not re.match(r"^[0-9a-f]{20}$", str(token or "")):
+        return None
+    p = REC_DIR / f"{token}.wav"
+    return str(p) if p.exists() else None
 
 
 # =====================================================================
 # 영상
 # =====================================================================
-STAGES = {"queued": 0, "avatar": 1, "timing": 2, "compose": 3, "done": 3, "failed": 0, "cancelled": 0}
+STAGES = {"queued": 0, "voice": 1, "lipsync": 2, "compose": 3, "done": 3, "failed": 0, "cancelled": 0}
+ACTIVE = ("voice", "lipsync", "compose")
 
 
 def share_base(request: Request):
@@ -742,7 +969,8 @@ def share_base(request: Request):
 def _video_out(r, queue_pos, base):
     v = dict(r)
     snap = json.loads(v.pop("script_snapshot"))
-    for k in ("subtitle_srt", "timings", "raw_path", "final_path", "thumb_path", "heygen_video_id", "background"):
+    for k in ("subtitle_srt", "timings", "raw_path", "final_path", "thumb_path", "heygen_video_id", "background",
+              "audio_path", "recordings"):
         v.pop(k, None)
     v["has_raw"] = bool(r["raw_path"] and Path(r["raw_path"]).exists())
     v["has_final"] = bool(r["final_path"] and Path(r["final_path"]).exists())
@@ -755,6 +983,7 @@ def _video_out(r, queue_pos, base):
     v["demo"] = bool(r["demo"])
     v["reviewed"] = bool(r["reviewed"])
     v["share_enabled"] = bool(r["share_enabled"])
+    v["lipsync"] = bool(r["lipsync"])
     return v
 
 
@@ -762,8 +991,9 @@ def _video_out(r, queue_pos, base):
 def list_videos(request: Request, user=Depends(require_user)):
     with db() as c:
         rs = c.execute("SELECT * FROM videos WHERE status!='cancelled' ORDER BY created_at DESC").fetchall()
+        avatars_waiting = c.execute("SELECT COUNT(*) FROM avatars WHERE status IN ('pending','preparing')").fetchone()[0]
     queued = sorted([r["id"] for r in rs if r["status"] == "queued"])
-    running = any(r["status"] in ("avatar", "timing", "compose") for r in rs)
+    running = any(r["status"] in ACTIVE for r in rs) or avatars_waiting > 0
     pos = {vid: i + (1 if running else 0) for i, vid in enumerate(queued)}
     base = share_base(request)
     return {"videos": [_video_out(r, pos, base) for r in rs], "now": now()}
@@ -794,6 +1024,31 @@ def _insert_video(**kw):
     return vid
 
 
+def _check_voice_choice(d, steps, language):
+    """→ (voice_mode, voice_db_id, recordings_json)"""
+    mode = d.get("voice_mode")
+    st = engines.status()
+    if mode == "clone":
+        voice = _get_voice(int(d.get("voice_id") or 0))
+        if not st.get("tts_ready"):
+            bad("목소리 엔진이 아직 설치되지 않았습니다. 설정 → 영상 엔진을 확인하거나 '직접 녹음'을 써 주세요.")
+        if not tts_language(language):
+            bad("이 언어는 목소리 엔진이 지원하지 않습니다. '직접 녹음'으로 만들어 주세요.")
+        return "clone", voice["id"], None
+    if mode == "recording":
+        recs = d.get("recordings") or []
+        if len(recs) != len(steps):
+            bad(f"단계가 {len(steps)}개입니다. 단계마다 녹음을 하나씩 올려 주세요.")
+        paths = [_recording_path(t) for t in recs]
+        if not all(paths):
+            bad("올린 녹음 파일을 찾지 못했습니다. 다시 올려 주세요.")
+        total = sum(media.wav_seconds(p) for p in paths)
+        if total > MAX_VIDEO_SECONDS:
+            bad(f"녹음 길이가 모두 {int(total)}초입니다. 최대 {MAX_VIDEO_SECONDS}초까지 만들 수 있습니다.")
+        return "recording", None, json.dumps(paths, ensure_ascii=False)
+    return "silent", None, None
+
+
 @app.post("/api/videos")
 async def create_video(request: Request, user=Depends(require_user)):
     d = await body(request)
@@ -802,78 +1057,87 @@ async def create_video(request: Request, user=Depends(require_user)):
     except ValueError as e:
         bad(str(e))
     s = _get_script(int(d.get("script_id") or 0))
-    avatar_id = str(d.get("avatar_id") or "")
-    if not avatar_id:
-        bad("아바타를 골라 주세요.")
-    is_demo = demo.is_demo(avatar_id)
-    if not is_demo and not get_setting("heygen_api_key"):
-        bad("HeyGen 연결이 필요합니다 — 설정에서 API 키를 등록해 주세요.")
     if not compose.ffmpeg_ok():
-        bad("ffmpeg 가 설치되어 있지 않아 영상을 합성할 수 없습니다. README 를 따라 설치해 주세요.")
+        bad("ffmpeg 가 설치되어 있지 않아 영상을 만들 수 없습니다. README 를 따라 설치해 주세요.")
+    avatar_id = str(d.get("avatar_id") or "")
+    if demo.is_demo(avatar_id):
+        av = next((a for a in demo.DEMO_AVATARS if a["id"] == avatar_id), None)
+        if not av:
+            bad("연습용 아바타 이름이 맞지 않습니다.")
+        orientation, is_demo, av_name, preview = av["orientation"], True, av["name"], av["preview_image"]
+        av_status = "demo"
+    else:
+        a = _get_avatar(int(avatar_id or 0))
+        if a["status"] == "failed":
+            bad("이 아바타는 준비에 실패했습니다. [아바타·목소리]에서 다시 준비하거나 새로 등록해 주세요.")
+        orientation, is_demo, av_name = a["orientation"] or "landscape", False, a["name"]
+        preview, av_status = _avatar_out(a)["preview_image"], a["status"]
     est = estimate_seconds(s["steps"], s["language"])
-    if est > MAX_VIDEO_SECONDS:
+    mode, voice_db_id, recordings = _check_voice_choice(d, s["steps"], s["language"])
+    if mode != "recording" and est > MAX_VIDEO_SECONDS:
         bad(f"원고 예상 길이가 약 {int(est)}초입니다. 최대 {MAX_VIDEO_SECONDS}초까지 만들 수 있으니 원고를 줄여 주세요.")
+    lipsync = bool(d.get("lipsync")) and not is_demo and mode != "silent"
+    if lipsync:
+        if not engines.status().get("lipsync_ready"):
+            bad("입모양 엔진이 아직 설치되지 않았습니다. 입모양 맞추기를 끄고 만들거나 엔진을 설치해 주세요.")
+        if av_status == "unprepared":
+            bad("이 아바타는 입모양 준비가 안 됐습니다. [아바타·목소리]에서 「입모양 준비」를 먼저 눌러 주세요.")
     if not s["reviewed"] and not d.get("confirm_unreviewed"):
         bad("이 스크립트는 검수 전 기계번역입니다. 의료진 검수 후 만들어 주세요.", 409)
-    aspect = "9:16" if d.get("orientation") == "portrait" else "16:9"
-    bg = d.get("background") if isinstance(d.get("background"), dict) else None
     style = validate_style(merged_style(d.get("style") or {}))
     vid = _insert_video(
         title=title, script_id=s["id"],
         script_snapshot=json.dumps({"title": s["title"], "steps": s["steps"]}, ensure_ascii=False),
-        language=s["language"], avatar_id=avatar_id, avatar_name=str(d.get("avatar_name") or "")[:100],
-        avatar_preview=str(d.get("avatar_preview") or "")[:1000], voice_id=d.get("voice_id") or None,
-        aspect=aspect, background=json.dumps(bg) if bg else None,
+        language=s["language"], avatar_id=avatar_id, avatar_name=av_name[:100], avatar_preview=preview,
+        aspect="9:16" if orientation == "portrait" else "16:9",
         style=json.dumps({**merged_style(), **style}, ensure_ascii=False), demo=1 if is_demo else 0,
+        voice_mode=mode, voice_db_id=voice_db_id, recordings=recordings, lipsync=1 if lipsync else 0,
         status="queued", reviewed=1 if s["reviewed"] else 0, created_by=user["username"])
     return {"ok": True, "id": vid}
 
 
 @app.post("/api/videos/{vid}/recompose")
 async def recompose(vid: int, request: Request, user=Depends(require_user)):
-    """꾸미기 바꾸기 — 아바타 영상은 그대로 두고 자막·로고만 다시 입힘 (HeyGen 비용 없음)"""
+    """꾸미기 바꾸기 — 음성·입모양 영상은 그대로 두고 자막·로고만 다시 입힘 (몇 분이면 끝)"""
     src = _get_video(vid)
-    if not (src["raw_path"] and Path(src["raw_path"]).exists()):
-        bad("아바타 원본 영상이 없어 꾸미기를 바꿀 수 없습니다.")
+    if not (src["raw_path"] and Path(src["raw_path"]).exists() and src["timings"]):
+        bad("입모양까지 맞춘 영상이 없어 꾸미기를 바꿀 수 없습니다.")
     d = await body(request)
     style = validate_style(merged_style(d.get("style") or json.loads(src["style"])))
     try:
         title = clean_title(d.get("title") or src["title"])
     except ValueError as e:
         bad(str(e))
-    new = _insert_video(
-        title=title, script_id=src["script_id"], script_snapshot=src["script_snapshot"],
-        language=src["language"], avatar_id=src["avatar_id"], avatar_name=src["avatar_name"],
-        avatar_preview=src["avatar_preview"], voice_id=src["voice_id"], aspect=src["aspect"],
-        background=src["background"], style=json.dumps({**merged_style(), **style}, ensure_ascii=False),
-        demo=src["demo"], status="queued", raw_path=src["raw_path"], subtitle_srt=src["subtitle_srt"],
-        heygen_video_id=src["heygen_video_id"], parent_id=src["id"], reviewed=src["reviewed"],
-        created_by=user["username"])
+    keep = ("script_id", "script_snapshot", "language", "avatar_id", "avatar_name", "avatar_preview", "aspect",
+            "demo", "raw_path", "timings", "audio_path", "voice_mode", "voice_db_id", "recordings", "lipsync",
+            "reviewed", "duration")
+    new = _insert_video(title=title, style=json.dumps({**merged_style(), **style}, ensure_ascii=False),
+                        status="queued", parent_id=src["id"], created_by=user["username"],
+                        **{k: src[k] for k in keep})
     return {"ok": True, "id": new}
 
 
 @app.post("/api/videos/{vid}/remake")
 async def remake(vid: int, request: Request, user=Depends(require_user)):
-    """대사 고쳐 다시 만들기 — 같은 아바타·자막 설정으로 처음부터 (HeyGen 비용 다시 듦)"""
+    """대사 고쳐 다시 만들기 — 같은 아바타·목소리·자막 설정으로 음성부터 새로"""
     src = _get_video(vid)
+    if src["voice_mode"] == "recording":
+        bad("직접 녹음한 영상은 대사를 고치려면 새로 녹음해야 합니다. 스크립트를 고친 뒤 [영상 만들기]에서 다시 만들어 주세요.")
     d = await body(request)
     try:
         steps = clean_steps(d.get("steps"))
     except ValueError as e:
         bad(str(e))
+    if len(steps) > MAX_STEPS:
+        bad("단계가 너무 많습니다.")
     est = estimate_seconds(steps, src["language"])
     if est > MAX_VIDEO_SECONDS:
         bad(f"원고 예상 길이가 약 {int(est)}초라 만들 수 없습니다. 대사를 줄여 주세요.")
-    if not src["demo"] and not get_setting("heygen_api_key"):
-        bad("HeyGen 연결이 필요합니다.")
     snap = json.loads(src["script_snapshot"])
-    new = _insert_video(
-        title=src["title"], script_id=src["script_id"],
-        script_snapshot=json.dumps({"title": snap.get("title"), "steps": steps}, ensure_ascii=False),
-        language=src["language"], avatar_id=src["avatar_id"], avatar_name=src["avatar_name"],
-        avatar_preview=src["avatar_preview"], voice_id=src["voice_id"], aspect=src["aspect"],
-        background=src["background"], style=src["style"], demo=src["demo"], status="queued",
-        reviewed=src["reviewed"], created_by=user["username"])
+    keep = ("title", "script_id", "language", "avatar_id", "avatar_name", "avatar_preview", "aspect", "style",
+            "demo", "voice_mode", "voice_db_id", "lipsync", "reviewed")
+    new = _insert_video(script_snapshot=json.dumps({"title": snap.get("title"), "steps": steps}, ensure_ascii=False),
+                        status="queued", created_by=user["username"], **{k: src[k] for k in keep})
     return {"ok": True, "id": new}
 
 
@@ -883,11 +1147,7 @@ def retry(vid: int, user=Depends(require_user)):
     if v["status"] != "failed":
         bad("실패한 영상만 다시 시도할 수 있습니다.")
     with db() as c:
-        if v["raw_path"] and Path(v["raw_path"]).exists():
-            c.execute("UPDATE videos SET status='queued', error=NULL, message='꾸미기만 다시 시도합니다' WHERE id=?", (vid,))
-        else:  # 아바타 단계부터 새로 (새 요청이므로 비용이 다시 들 수 있음)
-            c.execute("UPDATE videos SET status='queued', error=NULL, message=NULL, heygen_video_id=NULL, "
-                      "started_at=NULL WHERE id=?", (vid,))
+        c.execute("UPDATE videos SET status='queued', error=NULL, message='다시 시도합니다', progress=NULL WHERE id=?", (vid,))
     worker.wake()
     return {"ok": True}
 
@@ -895,7 +1155,7 @@ def retry(vid: int, user=Depends(require_user)):
 @app.post("/api/videos/{vid}/cancel")
 def cancel(vid: int, user=Depends(require_user)):
     v = _get_video(vid)
-    if v["status"] != "queued" or v["heygen_video_id"] and not v["raw_path"]:
+    if v["status"] != "queued":
         bad("아직 시작하지 않은 영상만 대기 취소할 수 있습니다.")
     with db() as c:
         c.execute("UPDATE videos SET status='cancelled' WHERE id=?", (vid,))
@@ -905,16 +1165,21 @@ def cancel(vid: int, user=Depends(require_user)):
 @app.delete("/api/videos/{vid}")
 def delete_video(vid: int, user=Depends(require_user)):
     v = _get_video(vid)
-    if v["status"] in ("avatar", "timing", "compose"):
+    if v["status"] in ACTIVE:
         bad("만드는 중인 영상은 지울 수 없습니다.")
     with db() as c:
         c.execute("DELETE FROM videos WHERE id=?", (vid,))
-        others = c.execute("SELECT COUNT(*) FROM videos WHERE raw_path=?", (v["raw_path"],)).fetchone()[0] if v["raw_path"] else 1
+        shared = {}
+        for col in ("raw_path", "audio_path"):
+            shared[col] = c.execute(f"SELECT COUNT(*) FROM videos WHERE {col}=?", (v[col],)).fetchone()[0] if v[col] else 1
     for p in (v["final_path"], v["thumb_path"]):
         if p:
             Path(p).unlink(missing_ok=True)
-    if v["raw_path"] and others == 0:
-        Path(v["raw_path"]).unlink(missing_ok=True)
+    for col in ("raw_path", "audio_path"):
+        if v[col] and shared[col] == 0:
+            Path(v[col]).unlink(missing_ok=True)
+    import shutil
+    shutil.rmtree(WORK_DIR / f"v{vid}", ignore_errors=True)
     return {"ok": True}
 
 
