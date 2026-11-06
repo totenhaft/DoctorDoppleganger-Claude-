@@ -53,7 +53,8 @@ def main():
     a = ap.parse_args()
 
     if sys.version_info < (3, 10) or sys.version_info >= (3, 14):
-        sys.exit("파이썬 3.10~3.13 이 필요합니다. README 의 1단계를 확인해 주세요.")
+        sys.exit(f"지금 파이썬은 {sys.version.split()[0]} 입니다. 영상 엔진(PyTorch 2.6)은 파이썬 3.10~3.13 에서만 설치됩니다.\n"
+                 "파이썬 3.12 를 함께 설치한 뒤 install_engines.bat 을 다시 실행해 주세요 (3.14 는 지우지 않아도 됩니다).")
     gpu = shutil.which("nvidia-smi")
     if not a.cpu:
         if not gpu:
