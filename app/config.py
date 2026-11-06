@@ -27,7 +27,11 @@ for d in (DATA_DIR, VIDEO_DIR, WORK_DIR, LOGO_DIR, FONT_DIR, AVATAR_DIR, VOICE_D
 # ---- 영상 엔진 (engines/ 폴더, install_engines.bat 으로 설치) ----
 ENGINE_DIR = Path(os.environ.get("DD_ENGINE_DIR", BASE_DIR / "engines"))  # 보통은 바꿀 필요 없음
 ENGINE_PY = ENGINE_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-TTS_MODEL_DIR = ENGINE_DIR / "models" / "Qwen3-TTS-12Hz-0.6B-Base"
+# 목소리 모델: 0.6B(가벼움, 그래픽카드 8GB) / 1.7B(고품질, 12GB 이상 권장 — RTX 4080 등)
+TTS_MODELS = {
+    "0.6B": ENGINE_DIR / "models" / "Qwen3-TTS-12Hz-0.6B-Base",
+    "1.7B": ENGINE_DIR / "models" / "Qwen3-TTS-12Hz-1.7B-Base",
+}
 AVATAR_MAX_SECONDS = 20   # 아바타 원본 영상은 앞 20초만 씀 (앞뒤로 반복 재생)
 PAUSE_SENTENCE = 0.35     # 문장 사이 쉬는 시간(초)
 PAUSE_STEP = 0.7          # 단계 사이 쉬는 시간(초)

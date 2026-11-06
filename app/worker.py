@@ -17,7 +17,7 @@ import traceback
 from pathlib import Path
 
 from . import compose, demo, engines, media
-from .config import (AVATAR_DIR, TTS_MODEL_DIR, VIDEO_DIR, WORK_DIR, tts_language)
+from .config import AVATAR_DIR, VIDEO_DIR, WORK_DIR, tts_language
 from .db import db, get_setting, now, row
 from .textutil import estimate_seconds
 from .timing import build_sentences, compute
@@ -177,8 +177,8 @@ def make_audio(v, steps, work):
             raise ValueError("이 언어는 목소리 엔진이 지원하지 않습니다. '직접 녹음'으로 만들어 주세요.")
         sents = build_sentences(steps)
         items = [{"text": s["text"], "out": str(work / f"tts_{i:03d}.wav")} for i, s in enumerate(sents)]
-        job = {"model": str(TTS_MODEL_DIR), "language": lang, "ref_audio": voice["ref_path"],
-               "ref_text": voice["ref_text"], "dtype": get_setting("tts_precision") or "float32",
+        job = {"model": str(engines.tts_model_dir()), "language": lang, "ref_audio": voice["ref_path"],
+               "ref_text": voice["ref_text"], "dtype": engines.tts_precision(),
                "seed": 1234, "items": items}
         job_path = work / "tts_job.json"
         job_path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
@@ -234,7 +234,7 @@ def make_visual(v, audio, raw, work):
         if av["status"] != "ready" or not av["prep_dir"]:
             raise ValueError("이 아바타는 입모양 준비가 아직 안 됐습니다. [아바타·목소리]에서 준비를 마친 뒤 다시 시도하거나, "
                              "입모양 맞추기를 끄고 만들어 주세요.")
-        batch = int(get_setting("lipsync_batch") or 8)
+        batch = engines.lipsync_batch()
         engines.run("lipsync_musetalk.py", ["infer", "--avatar", av["prep_dir"], "--audio", audio, "--out", raw,
                                             "--ffmpeg", compose._tool("ffmpeg"), "--batch", batch],
                     _prog(vid, 0, 1), log_name=f"video{vid}-lipsync")

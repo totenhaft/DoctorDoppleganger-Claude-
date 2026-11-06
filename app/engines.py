@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from .config import ENGINE_DIR, ENGINE_PY, LOG_DIR
+from .config import ENGINE_DIR, ENGINE_PY, LOG_DIR, TTS_MODELS
 
 GPU_LOCK = threading.Lock()   # 그래픽카드는 한 번에 한 작업만 (메모리 부족 방지)
 
@@ -51,6 +51,38 @@ def status(force=False):
         data.setdefault("cuda", False)
     _status.update(t=time.time(), data=data)
     return data
+
+
+def _has_model(size):
+    return (TTS_MODELS[size] / "config.json").exists()
+
+
+def tts_model_dir():
+    """설정과 그래픽카드 메모리에 맞는 목소리 모델 폴더 (12GB 이상이면 고품질 1.7B 우선)"""
+    from .db import get_setting
+    choice = get_setting("tts_model") or "auto"
+    vram = status().get("vram_gb") or 0
+    if choice == "1.7B" or (choice == "auto" and vram >= 12):
+        order = ["1.7B", "0.6B"]
+    else:
+        order = ["0.6B", "1.7B"]
+    for size in order:
+        if _has_model(size):
+            return TTS_MODELS[size]
+    return TTS_MODELS[order[0]]
+
+
+def tts_precision():
+    from .db import get_setting
+    return get_setting("tts_precision") or "auto"
+
+
+def lipsync_batch():
+    from .db import get_setting
+    b = int(get_setting("lipsync_batch") or 0)
+    if b > 0:
+        return b
+    return 16 if (status().get("vram_gb") or 0) >= 12 else 8
 
 
 def _flags():

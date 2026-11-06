@@ -4,11 +4,11 @@
 
 job.json 예:
 {
-  "model": "engines/models/Qwen3-TTS-12Hz-0.6B-Base",
+  "model": "engines/models/Qwen3-TTS-12Hz-1.7B-Base",
   "language": "Korean",
   "ref_audio": "data/voices/1/ref.wav",
   "ref_text": "안녕하세요. 연세솔안과 원장입니다. ...",
-  "dtype": "float32",
+  "dtype": "auto",
   "items": [{"text": "첫 문장입니다.", "out": "work/s0.wav"}, ...]
 }
 
@@ -66,7 +66,14 @@ def main():
         fail("qwen-tts 패키지가 없습니다. engines\\install 을 먼저 실행해 주세요.")
 
     cuda = torch.cuda.is_available()
-    dtype = torch.float16 if (job.get("dtype") == "float16" and cuda) else torch.float32
+    want = job.get("dtype") or "auto"
+    if not cuda:
+        dtype = torch.float32
+    elif want == "auto":  # RTX 30·40 시리즈처럼 bfloat16 을 지원하면 bf16, 아니면(RTX 20 등) float32
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+    else:
+        dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16}.get(want, torch.float32)
+    print(f"model={Path(job['model']).name} dtype={dtype}", flush=True)
     say(0.02, "목소리 모델을 불러오고 있습니다" + ("" if cuda else " (그래픽카드가 없어 매우 느립니다)"))
     try:
         model = Qwen3TTSModel.from_pretrained(job["model"], device_map="cuda:0" if cuda else "cpu",

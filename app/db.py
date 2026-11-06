@@ -218,8 +218,9 @@ DEFAULT_SETTINGS = {
     "languages": DEFAULT_LANGUAGES,
     "caption_style": DEFAULT_STYLE,
     "share_page": DEFAULT_SHARE,
-    "tts_precision": "float32",   # float32(정확) / float16(빠름·메모리 적게)
-    "lipsync_batch": 8,           # 입모양을 한 번에 몇 장씩 그릴지 (메모리 부족하면 줄이기)
+    "tts_model": "auto",          # auto(그래픽카드에 맞춰) / 0.6B / 1.7B
+    "tts_precision": "auto",      # auto / float32(정확) / float16(빠름·메모리 적게) / bfloat16
+    "lipsync_batch": 0,           # 입모양을 한 번에 몇 장씩 그릴지. 0 = 자동 (12GB 이상 16장, 아니면 8장)
     "logo_file": "",
     "anthropic_api_key": "",
     "claude_model": "",

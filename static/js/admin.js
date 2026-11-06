@@ -75,7 +75,7 @@ App.pages.settings = {
         h('button', { class: 'btn', disabled: !dirty, onclick: () => App.render() }, '되돌리기'),
         h('button', { class: 'btn primary', disabled: !dirty || !op, onclick: async () => {
           try {
-            await api('PUT', '/api/settings', { org_name: cur.org_name, org_name_i18n: cur.org_name_i18n, org_desc: cur.org_desc, languages: cur.languages, default_language: cur.default_language, caption_style: cur.caption_style, tts_precision: cur.tts_precision, lipsync_batch: cur.lipsync_batch, claude_model: cur.claude_model, public_base_url: cur.public_base_url });
+            await api('PUT', '/api/settings', { org_name: cur.org_name, org_name_i18n: cur.org_name_i18n, org_desc: cur.org_desc, languages: cur.languages, default_language: cur.default_language, caption_style: cur.caption_style, tts_model: cur.tts_model, tts_precision: cur.tts_precision, lipsync_batch: cur.lipsync_batch, claude_model: cur.claude_model, public_base_url: cur.public_base_url });
             toast('설정을 저장했습니다.'); await App.reloadSettings(); App.render();
           } catch (e) { fail(e); }
         } }, '설정 저장'));
@@ -86,15 +86,16 @@ App.pages.settings = {
     function engineCard() {
       const e = S.engine || {};
       const okTag = (ok, yes, no) => h('span', { class: 'tag ' + (ok ? 'ok' : 'warn') }, ok ? yes : no);
-      const stepper = (() => {
-        const inp = h('input', { type: 'number', min: 1, max: 32, value: cur.lipsync_batch, disabled: dis, class: 'input', style: { width: '90px' } });
-        inp.addEventListener('input', () => { cur.lipsync_batch = parseInt(inp.value, 10) || 8; markDirty(); });
-        return inp;
-      })();
-      const prec = h('div', { class: 'seg' }, [['float32', '정확 (기본)'], ['float16', '빠름 · 메모리 적게']].map(([v, l]) =>
-        h('button', { type: 'button', disabled: dis, class: cur.tts_precision === v ? 'on' : '', onclick: (ev) => {
-          cur.tts_precision = v; markDirty(); [...ev.target.parentNode.children].forEach((b) => b.classList.toggle('on', b === ev.target));
+      // 버튼 묶음으로 고르는 설정 (key: 설정 이름, opts: [[값, 글자], ...])
+      const pick = (key, opts) => h('div', { class: 'seg' }, opts.map(([v, l]) =>
+        h('button', { type: 'button', disabled: dis, class: String(cur[key]) === String(v) ? 'on' : '', onclick: (ev) => {
+          cur[key] = v; markDirty(); [...ev.target.parentNode.children].forEach((b) => b.classList.toggle('on', b === ev.target));
         } }, l)));
+      const have = e.tts_models || [];
+      const big = (e.vram_gb || 0) >= 12;
+      const modelSeg = pick('tts_model', [['auto', '자동'], ['0.6B', '가벼움 0.6B'], ['1.7B', '고품질 1.7B']]);
+      const precSeg = pick('tts_precision', [['auto', '자동'], ['float32', '정확'], ['float16', '빠름']]);
+      const batchSeg = pick('lipsync_batch', [[0, '자동'], [4, '4장'], [8, '8장'], [16, '16장']]);
       return h('div', { class: 'card' },
         h('div', { class: 'row between' }, h('h2', {}, '영상 엔진 (이 PC 에서 직접 만들기)'),
           h('button', { class: 'btn sm', onclick: async (ev) => {
@@ -112,9 +113,14 @@ App.pages.settings = {
           e.errors && e.errors.length ? h('details', { style: { marginTop: '8px' } }, h('summary', { style: { cursor: 'pointer' } }, '자세한 상태'),
             h('pre', { style: { whiteSpace: 'pre-wrap', fontSize: '12px', margin: '6px 0 0' } }, e.errors.join('\n'))) : null) : null,
         e.installed && !e.cuda ? h('div', { class: 'notice bad', style: { marginTop: '8px' } }, '그래픽카드(CUDA)를 쓰지 못하고 있습니다. NVIDIA 드라이버를 최신으로 설치한 뒤 PC 를 다시 켜 주세요. 그래픽카드 없이도 돌아가지만 영상 하나에 몇 시간 걸릴 수 있습니다.') : null,
-        h('div', { class: 'two', style: { marginTop: '14px' } },
-          h('div', {}, h('label', { class: 'lbl' }, '목소리 정밀도'), prec, h('div', { class: 'hint' }, '목소리가 깨지면 「정확」, 메모리 부족 오류가 나면 「빠름」.')),
-          h('div', {}, h('label', { class: 'lbl' }, '입모양 한 번에 처리할 장수'), stepper, h('div', { class: 'hint' }, '기본 8. 메모리 부족 오류가 나면 4 로 줄이세요.'))),
+        h('div', { class: 'stack', style: { marginTop: '14px' } },
+          h('div', {}, h('label', { class: 'lbl' }, '목소리 모델'), modelSeg,
+            h('div', { class: 'hint' }, `자동: 그래픽카드 메모리 12GB 이상(RTX 4080 등)이면 고품질 1.7B, 아니면 0.6B. 설치된 모델: ${have.length ? have.join(', ') : '없음'}`,
+              big && e.installed && !have.includes('1.7B') ? ' · 고품질 모델을 쓰려면 명령창에서 python engines\\install.py --tts 1.7B 를 실행하세요.' : '')),
+          h('div', {}, h('label', { class: 'lbl' }, '목소리 정밀도'), precSeg,
+            h('div', { class: 'hint' }, `자동: ${e.bf16 ? '이 그래픽카드는 bfloat16 을 지원해 빠르고 정확하게 돌립니다.' : 'bfloat16 을 지원하면 bf16, 아니면 float32.'} 목소리가 깨지면 「정확」, 메모리 부족 오류가 나면 「빠름」.`)),
+          h('div', {}, h('label', { class: 'lbl' }, '입모양 한 번에 처리할 장수'), batchSeg,
+            h('div', { class: 'hint' }, '자동: 12GB 이상이면 16장, 아니면 8장. 메모리 부족 오류가 나면 4장으로 줄이세요.'))),
         !S.ffmpeg ? h('div', { class: 'notice bad', style: { marginTop: '12px' } }, 'ffmpeg 를 찾지 못했습니다. 음성·영상 처리에 꼭 필요합니다. README 의 「ffmpeg 설치」를 따라 설치한 뒤 프로그램을 다시 켜 주세요.') : null);
     }
 

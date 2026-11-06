@@ -1,4 +1,4 @@
-"""영상 엔진(목소리·입모양) 설치 — 처음 한 번만 실행합니다. 약 10GB 를 내려받고 20~60분 걸립니다.
+"""영상 엔진(목소리·입모양) 설치 — 처음 한 번만 실행합니다. 약 10~12GB 를 내려받고 20~60분 걸립니다.
 
     python engines/install.py          (그래픽카드용, 권장)
     python engines/install.py --cpu    (그래픽카드 없이 시험만 — 영상 하나에 몇 시간 걸릴 수 있음)
@@ -48,6 +48,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cpu", action="store_true", help="그래픽카드 없이 설치 (매우 느림, 시험용)")
     ap.add_argument("--skip-models", action="store_true")
+    ap.add_argument("--tts", default="auto", choices=["auto", "0.6B", "1.7B", "both"],
+                    help="목소리 모델 크기 (auto: 그래픽카드 12GB 이상이면 1.7B)")
     a = ap.parse_args()
 
     if sys.version_info < (3, 10) or sys.version_info >= (3, 14):
@@ -89,7 +91,7 @@ def main():
     if a.skip_models:
         print("  --skip-models — 건너뜀")
     else:
-        run([py(), HERE / "download_models.py"])
+        run([py(), HERE / "download_models.py", "--tts", a.tts])
 
     step(5, "설치 점검")
     out = subprocess.run([py(), HERE / "check.py"], capture_output=True, text=True, encoding="utf-8")

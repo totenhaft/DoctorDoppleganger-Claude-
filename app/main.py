@@ -237,7 +237,7 @@ def _logo_info():
 
 
 PUBLIC_KEYS = ["org_name", "org_name_i18n", "org_desc", "default_language", "languages",
-               "caption_style", "tts_precision", "lipsync_batch", "claude_model", "public_base_url"]
+               "caption_style", "tts_model", "tts_precision", "lipsync_batch", "claude_model", "public_base_url"]
 
 
 @app.get("/api/settings")
@@ -285,15 +285,17 @@ async def put_settings(request: Request, op=Depends(require_operator)):
         set_setting("default_language", d["default_language"])
     if "caption_style" in d:
         set_setting("caption_style", validate_style(d["caption_style"]))
-    if "tts_precision" in d and d["tts_precision"] in ("float32", "float16"):
+    if "tts_model" in d and d["tts_model"] in ("auto", "0.6B", "1.7B"):
+        set_setting("tts_model", d["tts_model"])
+    if "tts_precision" in d and d["tts_precision"] in ("auto", "float32", "float16", "bfloat16"):
         set_setting("tts_precision", d["tts_precision"])
     if "lipsync_batch" in d:
         try:
             b = int(d["lipsync_batch"])
         except (TypeError, ValueError):
             bad("입모양 처리 장수에 숫자를 넣어 주세요.")
-        if not 1 <= b <= 32:
-            bad("입모양 처리 장수는 1~32 사이여야 합니다.")
+        if not 0 <= b <= 32:
+            bad("입모양 처리 장수는 0(자동)~32 사이여야 합니다.")
         set_setting("lipsync_batch", b)
     if "claude_model" in d:
         set_setting("claude_model", str(d["claude_model"] or "").strip()[:80])
@@ -913,11 +915,10 @@ async def test_voice(vid: int, request: Request, user=Depends(require_user)):
         bad("목소리 엔진이 설치되지 않았습니다. 설정 → 영상 엔진을 확인해 주세요.")
     if engines.GPU_LOCK.locked():
         bad("지금 다른 영상을 만들고 있어 그래픽카드가 바쁩니다. 끝난 뒤 다시 들어 보세요.", 409)
-    from .config import TTS_MODEL_DIR
     folder = Path(v["ref_path"]).parent
     raw = folder / "sample_raw.wav"
-    job = {"model": str(TTS_MODEL_DIR), "language": tts_language(v["language"]), "ref_audio": v["ref_path"],
-           "ref_text": v["ref_text"], "dtype": get_setting("tts_precision") or "float32",
+    job = {"model": str(engines.tts_model_dir()), "language": tts_language(v["language"]), "ref_audio": v["ref_path"],
+           "ref_text": v["ref_text"], "dtype": engines.tts_precision(),
            "items": [{"text": text, "out": str(raw)}]}
     jp = folder / "sample_job.json"
     jp.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")

@@ -9,7 +9,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MUSE = HERE / "MuseTalk"
-TTS_MODEL = HERE / "models" / "Qwen3-TTS-12Hz-0.6B-Base"
+TTS_MODELS = {"0.6B": HERE / "models" / "Qwen3-TTS-12Hz-0.6B-Base",
+              "1.7B": HERE / "models" / "Qwen3-TTS-12Hz-1.7B-Base"}
 
 MUSE_FILES = [
     "models/musetalkV15/unet.pth", "models/musetalkV15/musetalk.json",
@@ -30,12 +31,15 @@ def main():
             p = torch.cuda.get_device_properties(0)
             out["gpu"] = p.name
             out["vram_gb"] = round(p.total_memory / 1024 ** 3, 1)
+            out["bf16"] = bool(torch.cuda.is_bf16_supported())
     except Exception as e:
         out["cuda"] = False
         out["errors"].append(f"torch: {e}")
 
     # 목소리 엔진
-    tts_ok = (TTS_MODEL / "config.json").exists() and (TTS_MODEL / "speech_tokenizer").exists()
+    out["tts_models"] = [k for k, d in TTS_MODELS.items()
+                         if (d / "config.json").exists() and (d / "speech_tokenizer").exists()]
+    tts_ok = bool(out["tts_models"])
     if not tts_ok:
         out["errors"].append("목소리 모델 파일이 없습니다")
     try:
